@@ -3,15 +3,17 @@ import sys
 import time
 import wave
 
-import keyboard
 import pyaudio
+import webrtcvad
 import whisper
 import win32com.client
 
-import openai
+from openai import OpenAI
 
 TALK_LIMIT=10
-openai.api_key="YOUR_API_KEY"
+client = OpenAI(
+    api_key=os.environ.get("OPENAI_API_KEY"),
+)
 
 class ChatGPT:
     def __init__(self):
@@ -25,12 +27,13 @@ class ChatGPT:
 
     def conversation(self,s):
         self.messages+={"role":"user","content":s},
-        response = openai.ChatCompletion.create(
+        completion = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=self.messages
-        )["choices"][0]["message"]
+        )
+        response=completion.choices[0].message
         self.messages+=response,
-        return response["content"]
+        return response.content
 
 def speak_jp(text):
     speech = win32com.client.Dispatch("Sapi.SpVoice")
@@ -44,28 +47,40 @@ def speak_en(text):
     speech.Voice = v[0]
     speech.Speak(text)
 
-def record_voice(out="audio.wav",seconds=5,channels=1,rate=44100):
+def record_voice(out="audio.wav",max_seconds=20,silence_timeout=2,channels=1,sample_rate=48000,vad_aggressiveness=3):
     print("Recording start.")
     audio = pyaudio.PyAudio()
-    chunk=2**10
+    frame_duration = 30
+    chunk = int(sample_rate * frame_duration / 1000)
+    vad = webrtcvad.Vad(vad_aggressiveness)
+    
     stream = audio.open(
             format=pyaudio.paInt16,
             channels=channels,
-            rate=rate,input=True,
+            rate=sample_rate,
+            input=True,
             input_device_index=0,
             frames_per_buffer=chunk
             )
-    frames=[]
-    print("Press Enter key to exit it.")
-    while not keyboard.is_pressed("enter"):
+    
+    frames = []
+    start_time = time.time()
+    last_voice_time = time.time()
+    while time.time()-start_time < max_seconds:
       data=stream.read(chunk)
-      frames.append(data)
+      if vad.is_speech(data, sample_rate):
+        frames.append(data)
+        last_voice_time = time.time()
+      if time.time() - last_voice_time > silence_timeout:
+          break
+    
     stream.close()
     audio.terminate()
+
     waveFile = wave.open(out,'wb')
     waveFile.setnchannels(channels)
     waveFile.setsampwidth(audio.get_sample_size(pyaudio.paInt16))
-    waveFile.setframerate(rate)
+    waveFile.setframerate(sample_rate)
     waveFile.writeframes(b''.join(frames))
     waveFile.close()
 
@@ -90,17 +105,19 @@ def main():
             record_voice()
             s=voice_recognition()
             print("音声認識中…",s)
+            if not s:exit("ERROR")
             s=gpt.conversation(s)
             print(s)
             speak_jp(s)
     
     elif lang == "EN":
         gpt = ChatGPT()
-        for i in range(10):
+        for i in range(TALK_LIMIT):
             input("Press Enter to start talking.")
             record_voice()
             s=voice_recognition()
             print("Voice recognition in progress...",s)
+            if not s:exit("ERROR")
             s=gpt.conversation(s)
             print(s)
             speak_en(s)
