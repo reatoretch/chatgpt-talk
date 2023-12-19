@@ -1,4 +1,6 @@
-from chatgpt_talk import ChatGpt
+from chatgpttalk import ChatGpt
+
+TALK_LIMIT=10
 
 def main():
     args = sys.argv
